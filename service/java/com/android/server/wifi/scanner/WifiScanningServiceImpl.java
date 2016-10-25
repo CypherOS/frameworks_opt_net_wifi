@@ -2652,7 +2652,7 @@ public class WifiScanningServiceImpl extends IWifiScanner.Stub {
         StringBuilder sb = new StringBuilder();
         sb.append(callback)
                 .append(": ")
-                .append((ci == null) ? "ClientInfo[unknown]" : ci.toString())
+                .append(ci.toString())
                 .append(",Id=")
                 .append(id);
         if (extra != null) {

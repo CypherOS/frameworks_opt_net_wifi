@@ -160,7 +160,7 @@ public class WifiCountryCode {
      * country code.
      * Returns null if no Country Code was sent to driver.
      */
-    public synchronized String getCountryCodeSentToDriver() {
+    public synchronized String getCurrentCountryCode() {
         return mCurrentCountryCode;
     }
 

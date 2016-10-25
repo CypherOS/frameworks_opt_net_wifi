@@ -96,6 +96,7 @@ public class WifiController extends StateMachine {
     private final WifiStateMachine mWifiStateMachine;
     private final WifiSettingsStore mSettingsStore;
     private final WifiLockManager mWifiLockManager;
+    final LockList mLocks;
 
     /**
      * Temporary for computing UIDS that are responsible for starting WIFI.
@@ -703,7 +704,7 @@ public class WifiController extends StateMachine {
                 case CMD_WIFI_TOGGLED:
                     if (mSettingsStore.isWifiToggleEnabled()) {
                         mWifiStateMachine.setHostApRunning(null, false);
-                        mPendingState = mDeviceActiveState;
+                        mPendingState = mStaEnabledState;
                     }
                     break;
                 case CMD_SET_AP:

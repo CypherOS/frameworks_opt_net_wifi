@@ -527,7 +527,7 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         }
     }
 
-    private final IpManager mIpManager;
+    private IpManager mIpManager;
 
     private AlarmManager mAlarmManager;
     private PendingIntent mScanIntent;

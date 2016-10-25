@@ -130,6 +130,15 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     private final Context mContext;
     private final FrameworkFacade mFacade;
 
+    final LockList mLocks = new LockList();
+    // some wifi lock statistics
+    private int mFullHighPerfLocksAcquired;
+    private int mFullHighPerfLocksReleased;
+    private int mFullLocksAcquired;
+    private int mFullLocksReleased;
+    private int mScanLocksAcquired;
+    private int mScanLocksReleased;
+
     private final List<Multicaster> mMulticasters =
             new ArrayList<Multicaster>();
     private int mMulticastEnabled;
@@ -341,13 +350,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         mNotificationController = new WifiNotificationController(mContext,
                 wifiThread.getLooper(), mWifiStateMachine, mFacade, null);
 
-        mWifiLockManager = new WifiLockManager(mContext, mBatteryStats);
         mClientHandler = new ClientHandler(wifiThread.getLooper());
         mWifiStateMachineHandler = new WifiStateMachineHandler(wifiThread.getLooper());
         mWifiController = new WifiController(mContext, mWifiStateMachine,
-                mSettingsStore, mWifiLockManager, wifiThread.getLooper(), mFacade);
-        // Set the WifiController for WifiLastResortWatchdog
-        mWifiInjector.getWifiLastResortWatchdog().setWifiController(mWifiController);
+		        mSettingsStore, mLocks, wifiThread.getLooper(), mFacade);
     }
 
 
@@ -1671,7 +1677,6 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public void enableVerboseLogging(int verbose) {
         enforceAccessPermission();
         mWifiStateMachine.enableVerboseLogging(verbose);
-        mWifiLockManager.enableVerboseLogging(verbose);
     }
 
     public int getVerboseLoggingLevel() {
