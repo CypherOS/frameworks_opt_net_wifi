@@ -146,6 +146,10 @@ public class WifiApConfigStore {
             if (authType != KeyMgmt.NONE) {
                 config.preSharedKey = in.readUTF();
             }
+			// read in wifiApInactivityTimeout if bytes are available from in
+            if (in.available() != 0) {
+                config.wifiApInactivityTimeout = in.readLong();
+            }
         } catch (IOException e) {
             Log.e(TAG, "Error reading hotspot configuration " + e);
             config = null;
@@ -177,6 +181,7 @@ public class WifiApConfigStore {
             if (authType != KeyMgmt.NONE) {
                 out.writeUTF(config.preSharedKey);
             }
+			out.writeLong(config.wifiApInactivityTimeout);
         } catch (IOException e) {
             Log.e(TAG, "Error writing hotspot configuration" + e);
         }
@@ -196,6 +201,7 @@ public class WifiApConfigStore {
         String randomUUID = UUID.randomUUID().toString();
         //first 12 chars from xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
         config.preSharedKey = randomUUID.substring(0, 8) + randomUUID.substring(9, 13);
+		config.wifiApInactivityTimeout = 0;
         return config;
     }
 }
