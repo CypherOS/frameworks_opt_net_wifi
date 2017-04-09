@@ -614,7 +614,6 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         Slog.d(TAG, "setWifiEnabled: " + enable + " pid=" + Binder.getCallingPid()
                     + ", uid=" + Binder.getCallingUid());
         if(isStrictOpEnable()){
-            String packageName = mContext.getPackageManager().getNameForUid(Binder.getCallingUid());
             if((Binder.getCallingUid() > 10000) && (packageName.indexOf("android.uid.systemui") !=0)  && (packageName.indexOf("android.uid.system") != 0)) {
                 AppOpsManager mAppOpsManager  = mContext.getSystemService(AppOpsManager.class);
                 int result = mAppOpsManager.noteOp(AppOpsManager.OP_CHANGE_WIFI_STATE,Binder.getCallingUid(),packageName);
