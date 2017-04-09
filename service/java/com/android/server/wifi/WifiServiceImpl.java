@@ -608,13 +608,12 @@ public class WifiServiceImpl extends IWifiManager.Stub {
      * @return {@code true} if the enable/disable operation was
      *         started or is already in the queue.
      */
-    public synchronized boolean setWifiEnabled(String packageName, boolean enable)
-            throws RemoteException {
+    public synchronized boolean setWifiEnabled(boolean enable) {
         enforceChangePermission();
         Slog.d(TAG, "setWifiEnabled: " + enable + " pid=" + Binder.getCallingPid()
                     + ", uid=" + Binder.getCallingUid());
         if(isStrictOpEnable()){
-            String packageName = mContext.getPackageManager().getNameForUid(Binder.getCallingUid());
+			String packageName = mContext.getPackageManager().getNameForUid(Binder.getCallingUid());
             if((Binder.getCallingUid() > 10000) && (packageName.indexOf("android.uid.systemui") !=0)  && (packageName.indexOf("android.uid.system") != 0)) {
                 AppOpsManager mAppOpsManager  = mContext.getSystemService(AppOpsManager.class);
                 int result = mAppOpsManager.noteOp(AppOpsManager.OP_CHANGE_WIFI_STATE,Binder.getCallingUid(),packageName);
