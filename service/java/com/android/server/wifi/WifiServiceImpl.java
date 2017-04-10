@@ -132,15 +132,6 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     private final Context mContext;
     private final FrameworkFacade mFacade;
 
-    final LockList mLocks = new LockList();
-    // some wifi lock statistics
-    private int mFullHighPerfLocksAcquired;
-    private int mFullHighPerfLocksReleased;
-    private int mFullLocksAcquired;
-    private int mFullLocksReleased;
-    private int mScanLocksAcquired;
-    private int mScanLocksReleased;
-
     private final List<Multicaster> mMulticasters =
             new ArrayList<Multicaster>();
     private int mMulticastEnabled;

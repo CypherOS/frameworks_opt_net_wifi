@@ -86,6 +86,7 @@ import android.os.PowerManager;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
+import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.os.WorkSource;
@@ -2351,8 +2352,8 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
         pw.println("mUserWantsSuspendOpt " + mUserWantsSuspendOpt);
         pw.println("mSuspendOptNeedsDisabled " + mSuspendOptNeedsDisabled);
         pw.println("Supplicant status " + mWifiNative.status(true));
-        if (mCountryCode.getCountryCodeSentToDriver() != null) {
-            pw.println("CountryCode sent to driver " + mCountryCode.getCountryCodeSentToDriver());
+        if (mCountryCode.getCurrentCountryCode() != null) {
+            pw.println("CountryCode sent to driver " + mCountryCode.getCurrentCountryCode());
         } else {
             if (mCountryCode.getCountryCode() != null) {
                 pw.println("CountryCode: " +
