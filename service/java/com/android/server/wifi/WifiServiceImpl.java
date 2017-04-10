@@ -345,6 +345,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         mNotificationController = new WifiNotificationController(mContext,
                 wifiThread.getLooper(), mWifiStateMachine, mFacade, null);
 
+		mWifiLockManager = new WifiLockManager(mContext, mBatteryStats);
         mClientHandler = new ClientHandler(wifiThread.getLooper());
         mWifiStateMachineHandler = new WifiStateMachineHandler(wifiThread.getLooper());
         mWifiController = new WifiController(mContext, mWifiStateMachine,
@@ -1747,6 +1748,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     public void enableVerboseLogging(int verbose) {
         enforceAccessPermission();
         mWifiStateMachine.enableVerboseLogging(verbose);
+		mWifiLockManager.enableVerboseLogging(verbose);
     }
 
     public int getVerboseLoggingLevel() {

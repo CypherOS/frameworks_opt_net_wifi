@@ -96,7 +96,6 @@ public class WifiController extends StateMachine {
     private final WifiStateMachine mWifiStateMachine;
     private final WifiSettingsStore mSettingsStore;
     private final WifiLockManager mWifiLockManager;
-    final LockList mLocks;
 
     /**
      * Temporary for computing UIDS that are responsible for starting WIFI.
