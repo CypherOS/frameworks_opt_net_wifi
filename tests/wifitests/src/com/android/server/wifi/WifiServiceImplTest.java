@@ -16,7 +16,11 @@
 
 package com.android.server.wifi;
 
+import static android.net.wifi.WifiManager.LocalOnlyHotspotCallback.ERROR_INCOMPATIBLE_MODE;
+import static android.net.wifi.WifiManager.LocalOnlyHotspotCallback.ERROR_TETHERING_DISALLOWED;
 import static android.net.wifi.WifiManager.WIFI_STATE_DISABLED;
+import static android.provider.Settings.Secure.LOCATION_MODE_HIGH_ACCURACY;
+import static android.provider.Settings.Secure.LOCATION_MODE_OFF;
 
 import static com.android.server.wifi.WifiController.CMD_SET_AP;
 import static com.android.server.wifi.WifiController.CMD_WIFI_TOGGLED;
@@ -29,21 +33,27 @@ import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.*;
 
+import android.app.ActivityManager;
+import android.app.AppOpsManager;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.res.Resources;
 import android.net.IpConfiguration;
+import android.net.wifi.ScanSettings;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.IBinder;
 import android.os.IPowerManager;
 import android.os.Looper;
 import android.os.Message;
 import android.os.Messenger;
 import android.os.PowerManager;
 import android.os.UserManager;
+import android.os.WorkSource;
 import android.os.test.TestLooper;
+import android.provider.Settings;
 import android.test.suitebuilder.annotation.SmallTest;
 
 import com.android.internal.util.AsyncChannel;
@@ -69,21 +79,28 @@ import java.io.StringWriter;
 public class WifiServiceImplTest {
 
     private static final String TAG = "WifiServiceImplTest";
+    private static final String SCAN_PACKAGE_NAME = "scanPackage";
+    private static final String WHITE_LIST_SCAN_PACKAGE_NAME = "whiteListScanPackage";
     private static final int DEFAULT_VERBOSE_LOGGING = 0;
+    private static final long WIFI_BACKGROUND_SCAN_INTERVAL = 10000;
     private static final String ANDROID_SYSTEM_PACKAGE = "android";
     private static final String TEST_PACKAGE_NAME = "TestPackage";
     private static final String SETTINGS_PACKAGE_NAME = "com.android.settings";
     private static final String SYSUI_PACKAGE_NAME = "com.android.systemui";
 
+    private WifiServiceImpl mWifiServiceImpl;
+    private TestLooper mLooper;
+    private PowerManager mPowerManager;
+    private Handler mHandler;
+    private Messenger mAppMessenger;
+
     @Mock Context mContext;
     @Mock WifiInjector mWifiInjector;
-    WifiServiceImpl mWifiServiceImpl;
-
+    @Mock Clock mClock;
     @Mock WifiController mWifiController;
     @Mock WifiTrafficPoller mWifiTrafficPoller;
     @Mock WifiStateMachine mWifiStateMachine;
     @Mock HandlerThread mHandlerThread;
-    TestLooper mLooper;
     @Mock AsyncChannel mAsyncChannel;
     @Mock Resources mResources;
     @Mock FrameworkFacade mFrameworkFacade;
@@ -92,13 +109,16 @@ public class WifiServiceImplTest {
     @Mock WifiLastResortWatchdog mWifiLastResortWatchdog;
     @Mock WifiBackupRestore mWifiBackupRestore;
     @Mock WifiMetrics mWifiMetrics;
-    @Spy FakeWifiLog mLog;
     @Mock WifiPermissionsUtil mWifiPermissionsUtil;
     @Mock WifiSettingsStore mSettingsStore;
     @Mock ContentResolver mContentResolver;
     @Mock UserManager mUserManager;
     @Mock WifiConfiguration mApConfig;
-    PowerManager mPowerManager;
+    @Mock ActivityManager mActivityManager;
+    @Mock AppOpsManager mAppOpsManager;
+    @Mock IBinder mAppBinder;
+
+    @Spy FakeWifiLog mLog;
 
     private class WifiAsyncChannelTester {
         private static final String TAG = "WifiAsyncChannelTester";
@@ -156,6 +176,8 @@ public class WifiServiceImplTest {
     @Before public void setUp() {
         MockitoAnnotations.initMocks(this);
         mLooper = new TestLooper();
+        mHandler = new Handler(mLooper.getLooper());
+        mAppMessenger = new Messenger(mHandler);
 
         when(mWifiInjector.getUserManager()).thenReturn(mUserManager);
         when(mWifiInjector.getWifiController()).thenReturn(mWifiController);
@@ -168,6 +190,17 @@ public class WifiServiceImplTest {
         when(mContext.getContentResolver()).thenReturn(mContentResolver);
         doNothing().when(mFrameworkFacade).registerContentObserver(eq(mContext), any(),
                 anyBoolean(), any());
+        when(mContext.getSystemService(Context.ACTIVITY_SERVICE)).thenReturn(mActivityManager);
+        when(mContext.getSystemService(Context.APP_OPS_SERVICE)).thenReturn(mAppOpsManager);
+        when(mFrameworkFacade.getLongSetting(
+                eq(mContext),
+                eq(Settings.Global.WIFI_SCAN_BACKGROUND_THROTTLE_INTERVAL_MS),
+                anyLong()))
+                .thenReturn(WIFI_BACKGROUND_SCAN_INTERVAL);
+        when(mFrameworkFacade.getStringSetting(
+                eq(mContext),
+                eq(Settings.Global.WIFI_SCAN_BACKGROUND_THROTTLE_PACKAGE_WHITELIST)))
+                .thenReturn(WHITE_LIST_SCAN_PACKAGE_NAME);
         IPowerManager powerManagerService = mock(IPowerManager.class);
         mPowerManager = new PowerManager(mContext, powerManagerService, new Handler());
         when(mContext.getSystemServiceName(PowerManager.class)).thenReturn(Context.POWER_SERVICE);
@@ -186,6 +219,7 @@ public class WifiServiceImplTest {
         when(mWifiInjector.getWifiTrafficPoller()).thenReturn(wifiTrafficPoller);
         when(mWifiInjector.getWifiPermissionsUtil()).thenReturn(mWifiPermissionsUtil);
         when(mWifiInjector.getWifiSettingsStore()).thenReturn(mSettingsStore);
+        when(mWifiInjector.getClock()).thenReturn(mClock);
         mWifiServiceImpl = new WifiServiceImpl(mContext, mWifiInjector, mAsyncChannel);
         mWifiServiceImpl.setWifiHandlerLogForTest(mLog);
     }
@@ -586,5 +620,193 @@ public class WifiServiceImplTest {
                 .enforceCallingOrSelfPermission(eq(android.Manifest.permission.NETWORK_STACK),
                                                 eq("WifiService"));
         mWifiServiceImpl.stopSoftAp();
+    }
+
+    /**
+     * Ensure foreground apps can always do wifi scans.
+     */
+    @Test
+    public void testWifiScanStartedForeground() {
+        when(mActivityManager.getPackageImportance(SCAN_PACKAGE_NAME)).thenReturn(
+                ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE);
+        mWifiServiceImpl.startScan(null, null, SCAN_PACKAGE_NAME);
+        verify(mWifiStateMachine).startScan(
+                anyInt(), anyInt(), (ScanSettings) eq(null), any(WorkSource.class));
+    }
+
+    /**
+     * Ensure background apps get throttled when the previous scan is too close.
+     */
+    @Test
+    public void testWifiScanBackgroundThrottled() {
+        when(mActivityManager.getPackageImportance(SCAN_PACKAGE_NAME)).thenReturn(
+                ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED);
+        long startMs = 1000;
+        when(mClock.getElapsedSinceBootMillis()).thenReturn(startMs);
+        mWifiServiceImpl.startScan(null, null, SCAN_PACKAGE_NAME);
+        verify(mWifiStateMachine).startScan(
+                anyInt(), anyInt(), (ScanSettings) eq(null), any(WorkSource.class));
+
+        when(mClock.getElapsedSinceBootMillis()).thenReturn(
+                startMs + WIFI_BACKGROUND_SCAN_INTERVAL - 1000);
+        mWifiServiceImpl.startScan(null, null, SCAN_PACKAGE_NAME);
+        verify(mWifiStateMachine, times(1)).startScan(
+                anyInt(), anyInt(), (ScanSettings) eq(null), any(WorkSource.class));
+    }
+
+    /**
+     * Ensure background apps can do wifi scan when the throttle interval reached.
+     */
+    @Test
+    public void testWifiScanBackgroundNotThrottled() {
+        when(mActivityManager.getPackageImportance(SCAN_PACKAGE_NAME)).thenReturn(
+                ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED);
+        long startMs = 1000;
+        when(mClock.getElapsedSinceBootMillis()).thenReturn(startMs);
+        mWifiServiceImpl.startScan(null, null, SCAN_PACKAGE_NAME);
+        verify(mWifiStateMachine).startScan(
+                anyInt(), eq(0), (ScanSettings) eq(null), any(WorkSource.class));
+
+        when(mClock.getElapsedSinceBootMillis()).thenReturn(
+                startMs + WIFI_BACKGROUND_SCAN_INTERVAL + 1000);
+        mWifiServiceImpl.startScan(null, null, SCAN_PACKAGE_NAME);
+        verify(mWifiStateMachine).startScan(
+                anyInt(), eq(1), (ScanSettings) eq(null), any(WorkSource.class));
+    }
+
+    /**
+     * Ensure background apps can do wifi scan when the throttle interval reached.
+     */
+    @Test
+    public void testWifiScanBackgroundWhiteListed() {
+        when(mActivityManager.getPackageImportance(WHITE_LIST_SCAN_PACKAGE_NAME)).thenReturn(
+                ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED);
+        long startMs = 1000;
+        when(mClock.getElapsedSinceBootMillis()).thenReturn(startMs);
+        mWifiServiceImpl.startScan(null, null, WHITE_LIST_SCAN_PACKAGE_NAME);
+        verify(mWifiStateMachine).startScan(
+                anyInt(), anyInt(), (ScanSettings) eq(null), any(WorkSource.class));
+
+        when(mClock.getElapsedSinceBootMillis()).thenReturn(
+                startMs + WIFI_BACKGROUND_SCAN_INTERVAL - 1000);
+        mWifiServiceImpl.startScan(null, null, WHITE_LIST_SCAN_PACKAGE_NAME);
+        verify(mWifiStateMachine, times(2)).startScan(
+                anyInt(), anyInt(), (ScanSettings) eq(null), any(WorkSource.class));
+    }
+
+    /**
+     * Verify that the call to startLocalOnlyHotspot throws the UnsupportedOperationException
+     * until the implementation is complete.
+     */
+    @Test(expected = UnsupportedOperationException.class)
+    public void testStartLocalOnlyHotspotNotSupported() {
+        // allow test to proceed without a permission check failure
+        when(mSettingsStore.getLocationModeSetting(mContext))
+                .thenReturn(LOCATION_MODE_HIGH_ACCURACY);
+        when(mUserManager.hasUserRestriction(UserManager.DISALLOW_CONFIG_TETHERING))
+                .thenReturn(false);
+        when(mWifiStateMachine.syncGetWifiApState()).thenReturn(WifiManager.WIFI_AP_STATE_DISABLED);
+        mWifiServiceImpl.startLocalOnlyHotspot(mAppMessenger, mAppBinder);
+    }
+
+    /**
+     * Verify that a call to startLocalOnlyHotspot throws a SecurityException if the caller does not
+     * have the CHANGE_WIFI_STATE permission.
+     */
+    @Test(expected = SecurityException.class)
+    public void testStartLocalOnlyHotspotThrowsSecurityExceptionWithoutCorrectPermission() {
+        doThrow(new SecurityException()).when(mContext)
+                .enforceCallingOrSelfPermission(eq(android.Manifest.permission.CHANGE_WIFI_STATE),
+                                                eq("WifiService"));
+        mWifiServiceImpl.startLocalOnlyHotspot(mAppMessenger, mAppBinder);
+    }
+
+    /**
+     * Verify that a call to startLocalOnlyHotspot throws a SecurityException if the caller does not
+     * have Location permission.
+     */
+    @Test(expected = SecurityException.class)
+    public void testStartLocalOnlyHotspotThrowsSecurityExceptionWithoutLocationPermission() {
+        when(mContext.getOpPackageName()).thenReturn(TEST_PACKAGE_NAME);
+        doThrow(new SecurityException())
+                .when(mWifiPermissionsUtil).enforceLocationPermission(eq(TEST_PACKAGE_NAME),
+                                                                      anyInt());
+        mWifiServiceImpl.startLocalOnlyHotspot(mAppMessenger, mAppBinder);
+    }
+
+    /**
+     * Verify that a call to startLocalOnlyHotspot throws a SecurityException if Location mode is
+     * disabled.
+     */
+    @Test(expected = SecurityException.class)
+    public void testStartLocalOnlyHotspotThrowsSecurityExceptionWithoutLocationEnabled() {
+        when(mSettingsStore.getLocationModeSetting(mContext)).thenReturn(LOCATION_MODE_OFF);
+        mWifiServiceImpl.startLocalOnlyHotspot(mAppMessenger, mAppBinder);
+    }
+
+    /**
+     * Only start LocalOnlyHotspot if we are not tethering.
+     */
+    @Test
+    public void testHotspotDoesNotStartWhenAlreadyTethering() {
+        when(mSettingsStore.getLocationModeSetting(mContext))
+                            .thenReturn(LOCATION_MODE_HIGH_ACCURACY);
+        when(mWifiStateMachine.syncGetWifiApState()).thenReturn(WifiManager.WIFI_AP_STATE_ENABLED);
+        int returnCode = mWifiServiceImpl.startLocalOnlyHotspot(mAppMessenger, mAppBinder);
+        assertEquals(ERROR_INCOMPATIBLE_MODE, returnCode);
+    }
+
+    /**
+     * Only start LocalOnlyHotspot if admin setting does not disallow tethering.
+     */
+    @Test
+    public void testHotspotDoesNotStartWhenTetheringDisallowed() {
+        when(mSettingsStore.getLocationModeSetting(mContext))
+                .thenReturn(LOCATION_MODE_HIGH_ACCURACY);
+        when(mUserManager.hasUserRestriction(UserManager.DISALLOW_CONFIG_TETHERING))
+                .thenReturn(true);
+        when(mWifiStateMachine.syncGetWifiApState()).thenReturn(WifiManager.WIFI_AP_STATE_ENABLED);
+        int returnCode = mWifiServiceImpl.startLocalOnlyHotspot(mAppMessenger, mAppBinder);
+        assertEquals(ERROR_TETHERING_DISALLOWED, returnCode);
+    }
+
+    /**
+     * Verify that the call to stopLocalOnlyHotspot throws the UnsupportedOperationException until
+     * the implementation is complete.
+     */
+    @Test(expected = UnsupportedOperationException.class)
+    public void testStopLocalOnlyHotspotNotSupported() {
+        // allow test to proceed without a permission check failure
+        mWifiServiceImpl.stopLocalOnlyHotspot();
+    }
+
+    /**
+     * Verify that a call to stopLocalOnlyHotspot throws a SecurityException if the caller does not
+     * have the CHANGE_WIFI_STATE permission.
+     */
+    @Test(expected = SecurityException.class)
+    public void testStopLocalOnlyHotspotThrowsSecurityExceptionWithoutCorrectPermission() {
+        doThrow(new SecurityException()).when(mContext)
+                .enforceCallingOrSelfPermission(eq(android.Manifest.permission.CHANGE_WIFI_STATE),
+                                                eq("WifiService"));
+        mWifiServiceImpl.stopLocalOnlyHotspot();
+    }
+
+    /**
+     * Verify that the call to startWatchLocalOnlyHotspot throws the UnsupportedOperationException
+     * until the implementation is complete.
+     */
+    @Test(expected = UnsupportedOperationException.class)
+    public void testStartWatchLocalOnlyHotspotNotSupported() {
+        mWifiServiceImpl.startWatchLocalOnlyHotspot(mAppMessenger, mAppBinder);
+    }
+
+    /**
+     * Verify that the call to stopWatchLocalOnlyHotspot throws the UnsupportedOperationException
+     * until the implementation is complete.
+     */
+    @Test(expected = UnsupportedOperationException.class)
+    public void testStopWatchLocalOnlyHotspotNotSupported() {
+        mWifiServiceImpl.stopWatchLocalOnlyHotspot();
     }
 }
