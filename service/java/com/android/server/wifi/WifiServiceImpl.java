@@ -1797,6 +1797,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             return null;
         }
     }
+	
+	public boolean getWifiStaSapConcurrency() {
+        return mStaAndApConcurrency == 1;
+    }
 
     public void factoryReset() {
         enforceConnectivityInternalPermission();
