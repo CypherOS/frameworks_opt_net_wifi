@@ -3965,14 +3965,14 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                     }
                     break;
                 case CMD_CLIENT_INTERFACE_BINDER_DEATH:
-                    Log.wtf(TAG, "wificond died unexpectedly");
-                    // TODO(b/36586897): Automatically recover from this.
-                    transitionTo(mInitialState);
+                    Log.e(TAG, "wificond died unexpectedly. Triggering recovery");
+                    mWifiMetrics.incrementNumWificondCrashes();
+                    mWifiInjector.getSelfRecovery().trigger(SelfRecovery.REASON_WIFICOND_CRASH);
                     break;
                 case CMD_VENDOR_HAL_HWBINDER_DEATH:
-                    Log.wtf(TAG, "Vendor HAL died unexpectedly");
-                    // TODO(b/36586897): Automatically recover from this.
-                    transitionTo(mInitialState);
+                    Log.e(TAG, "Vendor HAL died unexpectedly. Triggering recovery");
+                    mWifiMetrics.incrementNumHalCrashes();
+                    mWifiInjector.getSelfRecovery().trigger(SelfRecovery.REASON_HAL_CRASH);
                     break;
                 case CMD_DIAGS_CONNECT_TIMEOUT:
                     mWifiDiagnostics.reportConnectionEvent(
@@ -6650,8 +6650,12 @@ public class WifiStateMachine extends StateMachine implements WifiNative.WifiRss
                 return false;
             }
             for (Map.Entry<String, WifiConfiguration> entry : configs.entrySet()) {
+                WifiConfiguration config = entry.getValue();
+                // Reset the network ID retrieved from wpa_supplicant, since we want to treat
+                // this as a new network addition in framework.
+                config.networkId = WifiConfiguration.INVALID_NETWORK_ID;
                 NetworkUpdateResult result = mWifiConfigManager.addOrUpdateNetwork(
-                        entry.getValue(), mSourceMessage.sendingUid);
+                        config, mSourceMessage.sendingUid);
                 if (!result.isSuccess()) {
                     loge("Failed to add network after WPS: " + entry.getValue());
                     return false;

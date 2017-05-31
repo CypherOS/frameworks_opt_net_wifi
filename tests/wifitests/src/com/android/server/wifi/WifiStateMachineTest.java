@@ -118,6 +118,8 @@ public class WifiStateMachineTest {
             (ActivityManager.isLowRamDeviceStatic()
                     ? WifiStateMachine.NUM_LOG_RECS_VERBOSE_LOW_MEMORY
                     : WifiStateMachine.NUM_LOG_RECS_VERBOSE);
+    private static final int WPS_SUPPLICANT_NETWORK_ID = 5;
+    private static final int WPS_FRAMEWORK_NETWORK_ID = 10;
     private static final String DEFAULT_TEST_SSID = "\"GoogleGuest\"";
 
     private long mBinderToken;
@@ -335,6 +337,7 @@ public class WifiStateMachineTest {
     @Mock SoftApManager mSoftApManager;
     @Mock WifiStateTracker mWifiStateTracker;
     @Mock PasspointManager mPasspointManager;
+    @Mock SelfRecovery mSelfRecovery;
 
     public WifiStateMachineTest() throws Exception {
     }
@@ -374,6 +377,7 @@ public class WifiStateMachineTest {
         when(mWifiInjector.getWifiStateTracker()).thenReturn(mWifiStateTracker);
         when(mWifiInjector.getWifiMonitor()).thenReturn(mWifiMonitor);
         when(mWifiInjector.getWifiNative()).thenReturn(mWifiNative);
+        when(mWifiInjector.getSelfRecovery()).thenReturn(mSelfRecovery);
 
         when(mWifiNative.setupForClientMode()).thenReturn(mClientInterface);
         when(mWifiNative.setupForSoftApMode()).thenReturn(mApInterface);
@@ -1382,6 +1386,7 @@ public class WifiStateMachineTest {
         mLooper.dispatchAll();
 
         assertEquals("DisconnectedState", getCurrentState().getName());
+        verifyMocksForWpsNetworkMigration();
     }
 
     /**
@@ -1431,6 +1436,7 @@ public class WifiStateMachineTest {
         mLooper.dispatchAll();
 
         assertEquals("DisconnectedState", getCurrentState().getName());
+        verifyMocksForWpsNetworkMigration();
     }
 
     /**
@@ -1471,31 +1477,63 @@ public class WifiStateMachineTest {
         mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
         mLooper.dispatchAll();
 
-        // We should not be in initial state now.
-        assertFalse("InitialState".equals(getCurrentState().getName()));
-
         // Now trigger the death notification.
         deathHandler.onDeath();
         mLooper.dispatchAll();
 
-        // We should back to initial state after vendor HAL death.
-        assertTrue("InitialState".equals(getCurrentState().getName()));
+        verify(mWifiMetrics).incrementNumHalCrashes();
+        verify(mSelfRecovery).trigger(eq(SelfRecovery.REASON_HAL_CRASH));
+    }
+
+    @Test
+    public void handleWificondDeath() throws Exception {
+        ArgumentCaptor<StateMachineDeathRecipient> deathHandlerCapturer =
+                ArgumentCaptor.forClass(StateMachineDeathRecipient.class);
+
+        // Trigger initialize to capture the death handler registration.
+        loadComponentsInStaMode();
+
+        verify(mClientInterfaceBinder).linkToDeath(deathHandlerCapturer.capture(), anyInt());
+        StateMachineDeathRecipient deathHandler = deathHandlerCapturer.getValue();
+
+        mWsm.setOperationalMode(WifiStateMachine.CONNECT_MODE);
+        mLooper.dispatchAll();
+
+        // Now trigger the death notification.
+        deathHandler.binderDied();
+        mLooper.dispatchAll();
+
+        verify(mWifiMetrics).incrementNumWificondCrashes();
+        verify(mSelfRecovery).trigger(eq(SelfRecovery.REASON_WIFICOND_CRASH));
     }
 
     private void setupMocksForWpsNetworkMigration() {
-        int newNetworkId = 5;
         // Now trigger the network connection event for adding the WPS network.
         doAnswer(new AnswerWithArguments() {
             public boolean answer(Map<String, WifiConfiguration> configs,
                                   SparseArray<Map<String, String>> networkExtras) throws Exception {
-                configs.put("dummy", new WifiConfiguration());
+                WifiConfiguration config = new WifiConfiguration();
+                config.networkId = WPS_SUPPLICANT_NETWORK_ID;
+                config.SSID = DEFAULT_TEST_SSID;
+                configs.put("dummy", config);
                 return true;
             }
         }).when(mWifiNative).migrateNetworksFromSupplicant(any(Map.class), any(SparseArray.class));
         when(mWifiConfigManager.addOrUpdateNetwork(any(WifiConfiguration.class), anyInt()))
-                .thenReturn(new NetworkUpdateResult(newNetworkId));
-        when(mWifiConfigManager.enableNetwork(eq(newNetworkId), anyBoolean(), anyInt()))
+                .thenReturn(new NetworkUpdateResult(WPS_FRAMEWORK_NETWORK_ID));
+        when(mWifiConfigManager.enableNetwork(eq(WPS_FRAMEWORK_NETWORK_ID), anyBoolean(), anyInt()))
                 .thenReturn(true);
+    }
+
+    private void verifyMocksForWpsNetworkMigration() {
+        // Network Ids should be reset so that it is treated as addition.
+        ArgumentCaptor<WifiConfiguration> wifiConfigCaptor =
+                ArgumentCaptor.forClass(WifiConfiguration.class);
+        verify(mWifiConfigManager).addOrUpdateNetwork(wifiConfigCaptor.capture(), anyInt());
+        assertEquals(WifiConfiguration.INVALID_NETWORK_ID, wifiConfigCaptor.getValue().networkId);
+        assertEquals(DEFAULT_TEST_SSID, wifiConfigCaptor.getValue().SSID);
+        verify(mWifiConfigManager).enableNetwork(eq(WPS_FRAMEWORK_NETWORK_ID), anyBoolean(),
+                anyInt());
     }
 
     /**
