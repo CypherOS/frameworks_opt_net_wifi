@@ -73,6 +73,7 @@ import android.net.wifi.WifiLinkLayerStats;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiManager.LocalOnlyHotspotCallback;
 import android.net.wifi.WifiScanner;
+import android.net.wifi.hotspot2.OsuProvider;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.os.AsyncTask;
 import android.os.BatteryStats;
@@ -1537,6 +1538,23 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     }
 
     /**
+     * Returns list of OSU (Online Sign-Up) providers associated with the given Passpoint network.
+     *
+     * @param scanResult scanResult of the Passpoint AP
+     * @return List of {@link OsuProvider}
+     */
+    @Override
+    public List<OsuProvider> getMatchingOsuProviders(ScanResult scanResult) {
+        enforceAccessPermission();
+        mLog.trace("getMatchingOsuProviders uid=%").c(Binder.getCallingUid()).flush();
+        if (!mContext.getPackageManager().hasSystemFeature(
+                PackageManager.FEATURE_WIFI_PASSPOINT)) {
+            throw new UnsupportedOperationException("Passpoint not enabled");
+        }
+        return mWifiStateMachine.syncGetMatchingOsuProviders(scanResult, mWifiStateMachineChannel);
+    }
+
+    /**
      * see {@link android.net.wifi.WifiManager#addOrUpdateNetwork(WifiConfiguration)}
      * @return the supplicant-assigned identifier for the new or updated
      * network if the operation succeeds, or {@code -1} if it fails
@@ -2221,6 +2239,9 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             String[] ipManagerArgs = new String[args.length - 1];
             System.arraycopy(args, 1, ipManagerArgs, 0, ipManagerArgs.length);
             mWifiStateMachine.dumpIpManager(fd, pw, ipManagerArgs);
+        } else if (args != null && args.length > 0 && WifiScoreReport.DUMP_ARG.equals(args[0])) {
+            WifiScoreReport wifiScoreReport = mWifiStateMachine.getWifiScoreReport();
+            if (wifiScoreReport != null) wifiScoreReport.dump(fd, pw, args);
         } else {
             pw.println("Wi-Fi is " + mWifiStateMachine.syncGetWifiStateByName());
             pw.println("Stay-awake conditions: " +
@@ -2244,6 +2265,12 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             mWifiMetrics.dump(fd, pw, args);
             pw.println();
             mWifiBackupRestore.dump(fd, pw, args);
+            pw.println();
+            WifiScoreReport wifiScoreReport = mWifiStateMachine.getWifiScoreReport();
+            if (wifiScoreReport != null) {
+                pw.println("WifiScoreReport:");
+                wifiScoreReport.dump(fd, pw, args);
+            }
             pw.println();
         }
     }
