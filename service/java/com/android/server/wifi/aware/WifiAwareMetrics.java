@@ -28,7 +28,9 @@ import com.android.server.wifi.nano.WifiMetricsProto;
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Wi-Fi Aware metric container/processor.
@@ -53,12 +55,18 @@ public class WifiAwareMetrics {
     private final Clock mClock;
 
     // enableUsage/disableUsage data
-    private long mLastEnableUsage = 0;
-    private long mLastEnableUsageInThisLogWindow = 0;
-    private long mAvailableTime = 0;
+    private long mLastEnableUsageMs = 0;
+    private long mLastEnableUsageInThisSampleWindowMs = 0;
+    private long mAvailableTimeMs = 0;
     private SparseIntArray mHistogramAwareAvailableDurationMs = new SparseIntArray();
 
-    // app data (attach)
+    // enabled data
+    private long mLastEnableAwareMs = 0;
+    private long mLastEnableAwareInThisSampleWindowMs = 0;
+    private long mEnabledTimeMs = 0;
+    private SparseIntArray mHistogramAwareEnabledDurationMs = new SparseIntArray();
+
+    // attach data
     private static class AttachData {
         boolean mUsesIdentityCallback; // do any attach sessions of the UID use identity callback
         int mMaxConcurrentAttaches;
@@ -66,6 +74,19 @@ public class WifiAwareMetrics {
     private Map<Integer, AttachData> mAttachDataByUid = new HashMap<>();
     private SparseIntArray mAttachStatusData = new SparseIntArray();
     private SparseIntArray mHistogramAttachDuration = new SparseIntArray();
+
+    // discovery data
+    private SparseIntArray mMaxPublishByUid = new SparseIntArray();
+    private SparseIntArray mMaxSubscribeByUid = new SparseIntArray();
+    private SparseIntArray mMaxDiscoveryByUid = new SparseIntArray();
+    private int mMaxPublishInSystem = 0;
+    private int mMaxSubscribeInSystem = 0;
+    private int mMaxDiscoveryInSystem = 0;
+    private SparseIntArray mPublishStatusData = new SparseIntArray();
+    private SparseIntArray mSubscribeStatusData = new SparseIntArray();
+    private SparseIntArray mHistogramPublishDuration = new SparseIntArray();
+    private SparseIntArray mHistogramSubscribeDuration = new SparseIntArray();
+    private Set<Integer> mAppsWithDiscoverySessionResourceFailure = new HashSet<>();
 
     public WifiAwareMetrics(Clock clock) {
         mClock = clock;
@@ -77,11 +98,11 @@ public class WifiAwareMetrics {
      */
     public void recordEnableUsage() {
         synchronized (mLock) {
-            if (mLastEnableUsage != 0) {
-                Log.w(TAG, "enableUsage: mLastEnableUsage* initialized!?");
+            if (mLastEnableUsageMs != 0) {
+                Log.w(TAG, "enableUsage: mLastEnableUsage*Ms initialized!?");
             }
-            mLastEnableUsage = mClock.getElapsedSinceBootMillis();
-            mLastEnableUsageInThisLogWindow = mLastEnableUsage;
+            mLastEnableUsageMs = mClock.getElapsedSinceBootMillis();
+            mLastEnableUsageInThisSampleWindowMs = mLastEnableUsageMs;
         }
     }
 
@@ -92,17 +113,48 @@ public class WifiAwareMetrics {
 
     public void recordDisableUsage() {
         synchronized (mLock) {
-            if (mLastEnableUsage == 0) {
+            if (mLastEnableUsageMs == 0) {
                 Log.e(TAG, "disableUsage: mLastEnableUsage not initialized!?");
                 return;
             }
 
             long now = mClock.getElapsedSinceBootMillis();
-            addLogValueToHistogram(now - mLastEnableUsage, mHistogramAwareAvailableDurationMs,
+            addLogValueToHistogram(now - mLastEnableUsageMs, mHistogramAwareAvailableDurationMs,
                     DURATION_LOG_HISTOGRAM);
-            mAvailableTime += now - mLastEnableUsageInThisLogWindow;
-            mLastEnableUsage = 0;
-            mLastEnableUsageInThisLogWindow = 0;
+            mAvailableTimeMs += now - mLastEnableUsageInThisSampleWindowMs;
+            mLastEnableUsageMs = 0;
+            mLastEnableUsageInThisSampleWindowMs = 0;
+        }
+    }
+
+    /**
+     * Push usage stats of Aware actually being enabled on-the-air: start
+     */
+    public void recordEnableAware() {
+        synchronized (mLock) {
+            if (mLastEnableAwareMs != 0) {
+                return; // already enabled
+            }
+            mLastEnableAwareMs = mClock.getElapsedSinceBootMillis();
+            mLastEnableAwareInThisSampleWindowMs = mLastEnableAwareMs;
+        }
+    }
+
+    /**
+     * Push usage stats of Aware actually being enabled on-the-air: stop (disable)
+     */
+    public void recordDisableAware() {
+        synchronized (mLock) {
+            if (mLastEnableAwareMs == 0) {
+                return; // already disabled
+            }
+
+            long now = mClock.getElapsedSinceBootMillis();
+            addLogValueToHistogram(now - mLastEnableAwareMs, mHistogramAwareEnabledDurationMs,
+                    DURATION_LOG_HISTOGRAM);
+            mEnabledTimeMs += now - mLastEnableAwareInThisSampleWindowMs;
+            mLastEnableAwareMs = 0;
+            mLastEnableAwareInThisSampleWindowMs = 0;
         }
     }
 
@@ -153,6 +205,80 @@ public class WifiAwareMetrics {
     }
 
     /**
+     * Push information about the new discovery session.
+     */
+    public void recordDiscoverySession(int uid, boolean isPublish,
+            SparseArray<WifiAwareClientState> clients) {
+        // count the number of sessions per uid and overall
+        int numPublishesInSystem = 0;
+        int numSubscribesInSystem = 0;
+        int numPublishesOnUid = 0;
+        int numSubscribesOnUid = 0;
+
+        for (int i = 0; i < clients.size(); ++i) {
+            WifiAwareClientState client = clients.valueAt(i);
+            boolean sameUid = client.getUid() == uid;
+
+            SparseArray<WifiAwareDiscoverySessionState> sessions = client.getSessions();
+            for (int j = 0; j < sessions.size(); ++j) {
+                WifiAwareDiscoverySessionState session = sessions.valueAt(j);
+
+                if (session.isPublishSession()) {
+                    numPublishesInSystem += 1;
+                    if (sameUid) {
+                        numPublishesOnUid += 1;
+                    }
+                } else {
+                    numSubscribesInSystem += 1;
+                    if (sameUid) {
+                        numSubscribesOnUid += 1;
+                    }
+                }
+            }
+        }
+
+        synchronized (mLock) {
+            mMaxPublishByUid.put(uid, Math.max(mMaxPublishByUid.get(uid), numPublishesOnUid));
+            mMaxSubscribeByUid.put(uid, Math.max(mMaxSubscribeByUid.get(uid), numSubscribesOnUid));
+            mMaxDiscoveryByUid.put(uid,
+                    Math.max(mMaxDiscoveryByUid.get(uid), numPublishesOnUid + numSubscribesOnUid));
+            mMaxPublishInSystem = Math.max(mMaxPublishInSystem, numPublishesInSystem);
+            mMaxSubscribeInSystem = Math.max(mMaxSubscribeInSystem, numSubscribesInSystem);
+            mMaxDiscoveryInSystem = Math.max(mMaxDiscoveryInSystem,
+                    numPublishesInSystem + numSubscribesInSystem);
+        }
+    }
+
+    /**
+     * Push information about a new discovery session status (recorded when the discovery session is
+     * created).
+     */
+    public void recordDiscoveryStatus(int uid, int status, boolean isPublish) {
+        synchronized (mLock) {
+            if (isPublish) {
+                mPublishStatusData.put(status, mPublishStatusData.get(status) + 1);
+            } else {
+                mSubscribeStatusData.put(status, mSubscribeStatusData.get(status) + 1);
+            }
+
+            if (status == NanStatusType.NO_RESOURCES_AVAILABLE) {
+                mAppsWithDiscoverySessionResourceFailure.add(uid);
+            }
+        }
+    }
+
+    /**
+     * Push duration information of a discovery session.
+     */
+    public void recordDiscoverySessionDuration(long creationTime, boolean isPublish) {
+        synchronized (mLock) {
+            addLogValueToHistogram(mClock.getElapsedSinceBootMillis() - creationTime,
+                    isPublish ? mHistogramPublishDuration : mHistogramSubscribeDuration,
+                    DURATION_LOG_HISTOGRAM);
+        }
+    }
+
+    /**
      * Consolidate all metrics into the proto.
      */
     public WifiMetricsProto.WifiAwareLog consolidateProto() {
@@ -161,10 +287,18 @@ public class WifiAwareMetrics {
         synchronized (mLock) {
             log.histogramAwareAvailableDurationMs = histogramToProtoArray(
                     mHistogramAwareAvailableDurationMs, DURATION_LOG_HISTOGRAM);
-            log.availableTimeMs = mAvailableTime;
-            if (mLastEnableUsageInThisLogWindow != 0) {
-                log.availableTimeMs += now - mLastEnableUsageInThisLogWindow;
+            log.availableTimeMs = mAvailableTimeMs;
+            if (mLastEnableUsageInThisSampleWindowMs != 0) {
+                log.availableTimeMs += now - mLastEnableUsageInThisSampleWindowMs;
             }
+
+            log.histogramAwareEnabledDurationMs = histogramToProtoArray(
+                    mHistogramAwareEnabledDurationMs, DURATION_LOG_HISTOGRAM);
+            log.enabledTimeMs = mEnabledTimeMs;
+            if (mLastEnableAwareInThisSampleWindowMs != 0) {
+                log.enabledTimeMs += now - mLastEnableAwareInThisSampleWindowMs;
+            }
+
             log.numApps = mAttachDataByUid.size();
             log.numAppsUsingIdentityCallback = 0;
             log.maxConcurrentAttachSessionsInApp = 0;
@@ -178,6 +312,21 @@ public class WifiAwareMetrics {
             log.histogramAttachSessionStatus = histogramToProtoArray(mAttachStatusData);
             log.histogramAttachDurationMs = histogramToProtoArray(mHistogramAttachDuration,
                     DURATION_LOG_HISTOGRAM);
+
+            log.maxConcurrentPublishInApp = max(mMaxPublishByUid);
+            log.maxConcurrentSubscribeInApp = max(mMaxSubscribeByUid);
+            log.maxConcurrentDiscoverySessionsInApp = max(mMaxDiscoveryByUid);
+            log.maxConcurrentPublishInSystem = mMaxPublishInSystem;
+            log.maxConcurrentSubscribeInSystem = mMaxSubscribeInSystem;
+            log.maxConcurrentDiscoverySessionsInSystem = mMaxDiscoveryInSystem;
+            log.histogramPublishStatus = histogramToProtoArray(mPublishStatusData);
+            log.histogramSubscribeStatus = histogramToProtoArray(mSubscribeStatusData);
+            log.numAppsWithDiscoverySessionFailureOutOfResources =
+                    mAppsWithDiscoverySessionResourceFailure.size();
+            log.histogramPublishSessionDurationMs = histogramToProtoArray(mHistogramPublishDuration,
+                    DURATION_LOG_HISTOGRAM);
+            log.histogramSubscribeSessionDurationMs = histogramToProtoArray(
+                    mHistogramSubscribeDuration, DURATION_LOG_HISTOGRAM);
         }
         return log;
     }
@@ -190,13 +339,33 @@ public class WifiAwareMetrics {
         synchronized (mLock) {
             // don't clear mLastEnableUsage since could be valid for next measurement period
             mHistogramAwareAvailableDurationMs.clear();
-            mAvailableTime = 0;
-            if (mLastEnableUsageInThisLogWindow != 0) {
-                mLastEnableUsageInThisLogWindow = now;
+            mAvailableTimeMs = 0;
+            if (mLastEnableUsageInThisSampleWindowMs != 0) {
+                mLastEnableUsageInThisSampleWindowMs = now;
             }
+
+            // don't clear mLastEnableAware since could be valid for next measurement period
+            mHistogramAwareEnabledDurationMs.clear();
+            mEnabledTimeMs = 0;
+            if (mLastEnableAwareInThisSampleWindowMs != 0) {
+                mLastEnableAwareInThisSampleWindowMs = now;
+            }
+
             mAttachDataByUid.clear();
             mAttachStatusData.clear();
             mHistogramAttachDuration.clear();
+
+            mMaxPublishByUid.clear();
+            mMaxSubscribeByUid.clear();
+            mMaxDiscoveryByUid.clear();
+            mMaxPublishInSystem = 0;
+            mMaxSubscribeInSystem = 0;
+            mMaxDiscoveryInSystem = 0;
+            mPublishStatusData.clear();
+            mSubscribeStatusData.clear();
+            mHistogramPublishDuration.clear();
+            mHistogramSubscribeDuration.clear();
+            mAppsWithDiscoverySessionResourceFailure.clear();
         }
     }
 
@@ -210,9 +379,10 @@ public class WifiAwareMetrics {
      */
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
         synchronized (mLock) {
-            pw.println("mLastEnableUsage:" + mLastEnableUsage);
-            pw.println("mLastEnableUsageInThisLogWindow:" + mLastEnableUsageInThisLogWindow);
-            pw.println("mAvailableTime:" + mAvailableTime);
+            pw.println("mLastEnableUsage:" + mLastEnableUsageMs);
+            pw.println(
+                    "mLastEnableUsageInThisSampleWindow:" + mLastEnableUsageInThisSampleWindowMs);
+            pw.println("mAvailableTime:" + mAvailableTimeMs);
             pw.println("mHistogramAwareAvailableDurationMs:");
             for (int i = 0; i < mHistogramAwareAvailableDurationMs.size(); ++i) {
                 pw.println("  " + mHistogramAwareAvailableDurationMs.keyAt(i) + ": "
@@ -408,5 +578,13 @@ public class WifiAwareMetrics {
                 Log.e(TAG, "Unrecognized NanStatusType: " + nanStatusType);
                 return WifiMetricsProto.WifiAwareLog.UNKNOWN_HAL_STATUS;
         }
+    }
+
+    private int max(SparseIntArray array) {
+        int max = 0;
+        for (int i = 0; i < array.size(); ++i) {
+            max = Math.max(max, array.valueAt(i));
+        }
+        return max;
     }
 }

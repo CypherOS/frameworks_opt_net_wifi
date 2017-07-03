@@ -149,6 +149,67 @@ public class WifiAwareMetricsTest {
                 equalTo(0));
     }
 
+    /**
+     * Validates that recordEnableAware() and recordDisableAware() record valid metrics.
+     */
+    @Test
+    public void testEnableDisableAwareMetrics() {
+        WifiMetricsProto.WifiAwareLog log;
+
+        // create 2 records
+        setTime(5);
+        mDut.recordEnableAware();
+        setTime(10);
+        mDut.recordDisableAware();
+        setTime(11);
+        mDut.recordEnableAware();
+        setTime(12);
+        mDut.recordDisableAware();
+
+        setTime(14);
+        log = mDut.consolidateProto();
+        collector.checkThat(countAllHistogramSamples(log.histogramAwareEnabledDurationMs),
+                equalTo(2));
+        validateProtoHistBucket("Duration[0] #1", log.histogramAwareEnabledDurationMs[0], 1, 2,
+                1);
+        validateProtoHistBucket("Duration[1] #1", log.histogramAwareEnabledDurationMs[1], 5, 6,
+                1);
+        collector.checkThat(log.enabledTimeMs, equalTo(6L));
+
+        // create another partial record
+        setTime(15);
+        mDut.recordEnableAware();
+
+        setTime(17);
+        log = mDut.consolidateProto();
+        collector.checkThat(countAllHistogramSamples(log.histogramAwareEnabledDurationMs),
+                equalTo(2));
+        validateProtoHistBucket("Duration[0] #2", log.histogramAwareEnabledDurationMs[0], 1, 2,
+                1);
+        validateProtoHistBucket("Duration[1] #2", log.histogramAwareEnabledDurationMs[1], 5, 6,
+                1);
+        collector.checkThat(log.enabledTimeMs, equalTo(8L)); // the partial record of 2ms
+
+
+        // clear and continue that partial record (verify completed)
+        mDut.clear();
+        setTime(23);
+        mDut.recordDisableAware();
+
+        log = mDut.consolidateProto();
+        collector.checkThat(countAllHistogramSamples(log.histogramAwareEnabledDurationMs),
+                equalTo(1));
+        validateProtoHistBucket("Duration[0] #3", log.histogramAwareEnabledDurationMs[0], 8, 9,
+                1);
+        collector.checkThat(log.enabledTimeMs, equalTo(6L)); // the remnant record of 6ms
+
+        // clear and verify empty records
+        mDut.clear();
+        log = mDut.consolidateProto();
+        collector.checkThat(countAllHistogramSamples(log.histogramAwareEnabledDurationMs),
+                equalTo(0));
+    }
+
     @Test
     public void testAttachSessionMetrics() {
         final int uid1 = 1005;
@@ -217,6 +278,94 @@ public class WifiAwareMetricsTest {
                 log.histogramAttachDurationMs.length, equalTo(2));
         validateProtoHistBucket("Duration[0]", log.histogramAttachDurationMs[0], 5, 6, 1);
         validateProtoHistBucket("Duration[1]", log.histogramAttachDurationMs[1], 10, 20, 1);
+    }
+
+    @Test
+    public void testDiscoverySessionMetrics() {
+        final int uid1 = 1005;
+        final int uid2 = 1006;
+        final SparseArray<WifiAwareClientState> clients = new SparseArray<>();
+        WifiMetricsProto.WifiAwareLog log;
+
+        setTime(5);
+        WifiAwareClientState client1 = new WifiAwareClientState(mMockContext, 10, uid1, 0, null,
+                null, null, false, 0);
+        WifiAwareClientState client2 = new WifiAwareClientState(mMockContext, 11, uid2, 0, null,
+                null, null, false, 0);
+        clients.put(10, client1);
+        clients.put(11, client2);
+
+        // uid1: publish session 1
+        client1.addSession(new WifiAwareDiscoverySessionState(null, 100, (byte) 0, null, true,
+                mClock.getElapsedSinceBootMillis()));
+        mDut.recordDiscoverySession(uid1, true, clients);
+        mDut.recordDiscoveryStatus(uid1, NanStatusType.SUCCESS, true);
+
+        // uid1: publish session 2
+        client1.addSession(new WifiAwareDiscoverySessionState(null, 101, (byte) 0, null, true,
+                mClock.getElapsedSinceBootMillis()));
+        mDut.recordDiscoverySession(uid1, true, clients);
+        mDut.recordDiscoveryStatus(uid1, NanStatusType.SUCCESS, true);
+
+        // uid2: subscribe session 1
+        client2.addSession(new WifiAwareDiscoverySessionState(null, 102, (byte) 0, null, false,
+                mClock.getElapsedSinceBootMillis()));
+        mDut.recordDiscoverySession(uid2, false, clients);
+        mDut.recordDiscoveryStatus(uid2, NanStatusType.SUCCESS, false);
+
+        // uid2: publish session 2
+        client2.addSession(new WifiAwareDiscoverySessionState(null, 103, (byte) 0, null, true,
+                mClock.getElapsedSinceBootMillis()));
+        mDut.recordDiscoverySession(uid2, false, clients);
+        mDut.recordDiscoveryStatus(uid2, NanStatusType.SUCCESS, false);
+
+        // uid1: delete session 1
+        setTime(10);
+        mDut.recordDiscoverySessionDuration(client1.getSession(100).getCreationTime(),
+                client1.getSession(100).isPublishSession());
+        client1.removeSession(100);
+
+        // uid2: delete session 1
+        setTime(15);
+        mDut.recordDiscoverySessionDuration(client2.getSession(102).getCreationTime(),
+                client2.getSession(102).isPublishSession());
+        client2.removeSession(102);
+
+        // uid2: subscribe session 3
+        mDut.recordDiscoverySession(uid2, false, clients);
+        client2.addSession(new WifiAwareDiscoverySessionState(null, 104, (byte) 0, null, false,
+                mClock.getElapsedSinceBootMillis()));
+
+        // a few failures
+        mDut.recordDiscoveryStatus(uid1, NanStatusType.INTERNAL_FAILURE, true);
+        mDut.recordDiscoveryStatus(uid2, NanStatusType.INTERNAL_FAILURE, false);
+        mDut.recordDiscoveryStatus(uid2, NanStatusType.NO_RESOURCES_AVAILABLE, false);
+        mDut.recordAttachStatus(-5); // invalid
+
+        // verify
+        log = mDut.consolidateProto();
+
+        collector.checkThat("maxConcurrentPublishInApp", log.maxConcurrentPublishInApp, equalTo(2));
+        collector.checkThat("maxConcurrentSubscribeInApp", log.maxConcurrentSubscribeInApp,
+                equalTo(1));
+        collector.checkThat("maxConcurrentDiscoverySessionsInApp",
+                log.maxConcurrentDiscoverySessionsInApp, equalTo(2));
+        collector.checkThat("maxConcurrentPublishInSystem", log.maxConcurrentPublishInSystem,
+                equalTo(3));
+        collector.checkThat("maxConcurrentSubscribeInSystem", log.maxConcurrentSubscribeInSystem,
+                equalTo(1));
+        collector.checkThat("maxConcurrentDiscoverySessionsInSystem",
+                log.maxConcurrentDiscoverySessionsInSystem, equalTo(4));
+        collector.checkThat("histogramPublishStatus.length",
+                log.histogramPublishStatus.length, equalTo(2)); // 2 buckets
+        collector.checkThat("histogramSubscribeStatus.length",
+                log.histogramSubscribeStatus.length, equalTo(3)); // 3 buckets
+        collector.checkThat("numAppsWithDiscoverySessionFailureOutOfResources",
+                log.numAppsWithDiscoverySessionFailureOutOfResources, equalTo(1));
+        validateProtoHistBucket("Publish Duration[0]", log.histogramPublishSessionDurationMs[0], 5,
+                6, 1);
+        validateProtoHistBucket("Subscribe Duration[0]", log.histogramSubscribeSessionDurationMs[0],
+                10, 20, 1);
     }
 
     /**
