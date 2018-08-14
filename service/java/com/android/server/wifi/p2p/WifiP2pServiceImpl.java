@@ -687,6 +687,8 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
         private boolean mIsInterfaceAvailable = false;
         // Is wifi on or off.
         private boolean mIsWifiEnabled = false;
+		// Determines whether P2p was attempted.
+		private boolean mWasP2pAttempted = false;
 
         // Saved WifiP2pConfig for an ongoing peer connection. This will never be null.
         // The deviceAddress will be an empty string when the device is inactive
@@ -734,6 +736,7 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
                             checkAndReEnableP2p();
                         } else {
                             mIsWifiEnabled = false;
+							mWasP2pAttempted = false;
                             // Teardown P2P if it's up already.
                             sendMessage(DISABLE_P2P);
                         }
@@ -2493,9 +2496,11 @@ public class WifiP2pServiceImpl extends IWifiP2pManager.Stub {
         // b) P2P interface is available.
         // c) There is atleast 1 client app which invoked initialize().
         private void checkAndReEnableP2p() {
+			if (mWasP2pAttempted) return;
             Log.d(TAG, "Wifi enabled=" + mIsWifiEnabled + ", P2P Interface availability="
                     + mIsInterfaceAvailable + ", Number of clients=" + mDeathDataByBinder.size());
             if (mIsWifiEnabled && mIsInterfaceAvailable && !mDeathDataByBinder.isEmpty()) {
+				mWasP2pAttempted = true;
                 sendMessage(ENABLE_P2P);
             }
         }
