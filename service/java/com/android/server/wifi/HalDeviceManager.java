@@ -1162,7 +1162,7 @@ public class HalDeviceManager {
                     return false;
                 } else {
                     int triedCount = 0;
-                    while (triedCount <= START_HAL_RETRY_TIMES) {
+                    while (triedCount <= 3) {
                         WifiStatus status = mWifi.start();
                         if (status.code == WifiStatusCode.SUCCESS) {
                             initIWifiChipDebugListeners();
