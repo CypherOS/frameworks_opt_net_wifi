@@ -1182,6 +1182,9 @@ public class HalDeviceManager {
                                 // no-op
                             }
                             triedCount++;
+			    if (triedCound >= 10) {
+				return false;
+			    }
                         } else {
                             // Should not retry on other failures.
                             Log.e(TAG, "Cannot start IWifi: " + statusString(status));
